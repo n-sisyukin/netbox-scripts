@@ -16,3 +16,8 @@ Correct operation of the script requires the presence of the following custom fi
 8. "virtualization_vms_primaryipv6" string type
 9. "virtualization_vms_folder" string type
 10. "virtualization_vms_have_direct_attach_luns" string type
+11. "virtualization_vms_disks" json type
+12. "virtualization_vms_owners" string type
+13. "virtualization_vms_notes" text type
+14. "virtualization_vms_iscsi_network_access" string type
+15. "virtualization_vms_type_of_nics" string type
