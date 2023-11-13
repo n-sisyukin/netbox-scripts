@@ -1,6 +1,6 @@
 # netbox-scripts
 
-Little project to load data from VMware vSphere to  [NetBox](https://github.com/netbox-community/netbox).
+Little project to load data from VMware vSphere to  [NetBox](https://link.sisyukin.ru/fzidH3).
 
 ## requirements
 
