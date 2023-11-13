@@ -15,6 +15,4 @@ mail_flg = True                                      #  Flag of need to send ema
 mail_srv = 'smtp.example.domain'                     #  Server SMTP name
 mail_prt = 25                                        #  Server SMTP port
 mail_sender = 'username@example.domain'              #  SMTP login
-mail_pas = 'password_example'                        #  SMTP password  
-mail_recipients = ['user01@example.domain',          #  Email recipients
-                   'user02@example.domain']
+mail_pas = 'password_example'                        #  SMTP password
