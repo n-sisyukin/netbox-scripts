@@ -209,56 +209,32 @@ POWER_STATES = {"POWERED_ON": "active",
                 "POWERED_OFF": "offline",
                 "SUSPENDED": "staged"}
 
-REQUIRED_CUSTOM_FIELDS = {"virtualization_vms_filesystems_capacity",
-                          "virtualization_vms_guesstatus",
-                          "virtualization_vms_have_direct_attach_luns",
-                          "virtualization_vms_iscsi_network_access",
-                          "virtualization_vms_guestos",
-                          "virtualization_vms_primaryipv4",
-                          "virtualization_vms_primaryipv6",
-                          "virtualization_vms_type_of_nics",
-                          "virtualization_vms_uuid",
-                          "virtualization_vms_folder",
-                          "virtualization_vms_disks",
-                          "virtualization_vms_owners",
-                          "virtualization_vms_filesystems",
-                          "virtualization_vms_interfaces",
-                          "virtualization_vms_notes",
-                          "virtualization_vms_backup_status"}
-
-CLUSTERS_TYPES = {"vmware": {"id": 1, "note": "virtualization (vmware vsphere)"}}
-
-OWNERS_OF_VMS = {}
-
 KB = 2 ** 10  #  1KB in bytes
 MB = 2 ** 20  #  1MB in bytes
 GB = 2 ** 30  #  1GB in bytes
 TB = 2 ** 40  #  1TB in bytes
 
-NAME_OF_ISCSI_NETWORK = 'iSCSI-network-in-VMware'
-
+from xml.etree.ElementInclude import include
 from requests.auth import HTTPBasicAuth
 import requests
 import json
 import urllib3
 import sys
 import smtplib, ssl
-import re
-from email.utils import formatdate
 from datetime import datetime as dt
 
 import ipaddress
 from netbox_python import NetBoxClient
 from time import time
 
-from email import encoders
-from email.mime.base import MIMEBase
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-
-import config as conf  #  Config file containing flags, logins, passwords for connecting to NetBox, VMware, Veeam. 
+from email.message import EmailMessage
+from email.utils import formatdate
 
 urllib3.disable_warnings()
+
+RUN_HOUR = int(f'{dt.now():%H}')
 
 def benchmark(func):
     def benchmark_decorator(*args, **kwargs):
@@ -274,78 +250,108 @@ def benchmark(func):
     return benchmark_decorator
 
 class ManageNetBox:
-    def __init__(self, **arg):
+    def __init__(self, t_conf_filename='config.json'):
         
-        self.log_flg = arg['log_flg'] if 'log_flg' in arg.keys() else False
+        self.__readConfigFromFile(t_conf_filename)
 
-        self.mail_flg = arg['mail_flg'] if 'mail_flg' in arg.keys() else False
-
-        self.nb_flg = arg['nb_flg'] if 'nb_flg' in arg.keys() else False
-        self.vm_flg = arg['vm_flg'] if 'vm_flg' in arg.keys() else False
-        
-        if self.log_flg:
-            self.errors_log_filename = arg['errors_log_filename']
-            self.result_log_filename = arg['result_log_filename']
-
-        if self.mail_flg:
-            self.mail_srv = arg['mail_srv']
-            self.mail_prt = arg['mail_prt']
-            self.mail_sender = arg['mail_sender']
-            self.mail_pas = arg['mail_pas']
-            
         if self.nb_flg:
-            self.nb_url = arg['nb_url']
-            self.nb_key = arg['nb_key']
             self.__connectToNetBox()
-
-        if self.vm_flg:
-            self.vm_url = arg['vm_url']
-            self.vm_log = arg['vm_log']
-            self.vm_pas = arg['vm_pas']
-            self.__connectToVMware()
         
+        if self.vm_flg:
+            self.__connectToVMware()
+
         if self.nb_flg and self.vm_flg:
             pass
+    
+    def __readConfigFromFile(self, t_conf_filename):
+        cf = self.__readJSONFromFile(t_conf_filename)
+        self.config_full = cf
 
-    # Write to files methods
+        self.log_flg = cf['log_flg'] if 'log_flg' in cf.keys() else False
+        self.dump_flg = cf['dump_flg'] if 'dump_flg' in cf.keys() else False
+
+        self.mail_flg = cf['mail_flg'] if 'mail_flg' in cf.keys() else False
+
+        self.nb_flg = cf['nb_flg'] if 'nb_flg' in cf.keys() else False
+        self.vm_flg = cf['vm_flg'] if 'vm_flg' in cf.keys() else False
+
+        self.admin_email = cf['admin_email']
+        
+        if self.log_flg:
+            self.errors_log_filename = cf['errors_log_filename']
+            self.result_log_filename = cf['result_log_filename']
+
+        if self.mail_flg:
+            self.mail_srv = cf['mail_srv']
+            self.mail_prt = cf['mail_prt']
+            self.mail_sender = cf['mail_sender']
+            self.mail_pas = cf['mail_pas']
+            
+        if self.nb_flg:
+            self.nb_url = cf['nb_url']
+            self.nb_key = cf['nb_key']
+
+        if self.vm_flg:
+            self.vm_url = cf['vm_url']
+            self.vm_log = cf['vm_log']
+            self.vm_pas = cf['vm_pas']
+
+        self.list_of_vms_prepare_to_backup_job = self.__readListFromFile('list_of_vms_prepare_to_backup_job.txt')
+        self.list_of_vms_in_backup_job = self.__readListFromFile('list_of_vms_in_backup_job.txt')
+
+        self.sites = cf['sites']
+        
+        self.name_of_iscsi_network = cf['name_of_iscsi_network']
+        self.min_notification_hour = cf['min_notification_hour']
+        self.max_notification_hour = cf['max_notification_hour']
+        self.datastores = cf['datastores']
+        self.cluster_types = cf['cluster_types']
+        
+        self.cfs = cf['custom_fields']['cfs']
+        self.backup_status = cf[self.cfs]['backup_status']
+        self.fs_capacity = cf[self.cfs]['fs_capacity']
+        self.guesstatus = cf[self.cfs]['guesstatus']
+        self.have_luns = cf[self.cfs]['have_luns']
+        self.iscsi_network = cf[self.cfs]['iscsi_network']
+        self.guestos = cf[self.cfs]['guestos']
+        self.primaryipv4 = cf[self.cfs]['primaryipv4']
+        self.primaryipv6 = cf[self.cfs]['primaryipv6']
+        self.sans = cf[self.cfs]['sans']
+        self.type_of_nics = cf[self.cfs]['type_of_nics']
+        self.t_uuid = cf[self.cfs]['t_uuid']
+        self.folder = cf[self.cfs]['folder']
+        self.disks = cf[self.cfs]['disks']
+        self.filesystems = cf[self.cfs]['filesystems']
+        self.interfaces = cf[self.cfs]['interfaces']
+        self.notes = cf[self.cfs]['notes']
+        self.owners = cf[self.cfs]['owners']
+        self.purpose = cf[self.cfs]['purpose']
+        self.have_public_ips = cf[self.cfs]['have_public_ips']
+        self.all_public_ips = cf[self.cfs]['all_public_ips']
+        self.all_private_ips = cf[self.cfs]['all_private_ips']
+        self.vlans = cf[self.cfs]['vlans']
+
+        self.ignore_to_email = cf[self.cfs]['ignore_to_email']
+
+    # Read and Write files methods
     def dumpAllAboutVMsSyncToFiles(self):
         self.__dumpJSN('dump.vms_from_vw.json', self.vms_from_vw)
         self.__dumpJSN('dump.vms_from_nb.json', self.vms_from_nb)
-        self.__dumpTXT('dump.clusters_lst_from_vw.txt', self.clusters_lst_from_vw)
-        self.__dumpTXT('dump.folders_lst_from_vw.txt', self.folders_lst_from_vw)
-        self.__dumpTXT('dump.vms_lst_from_vw.txt', self.vms_lst_from_vw)
-        self.__dumpJSN('dump.vms_to_netbox.json', self.vms_to_netbox)
-        self.__dumpJSN('dump.vms_to_upd_in_nb.json', self.vms_to_upd_in_nb)
-        self.__dumpJSN('dump.vms_to_crt_in_nb.json', self.vms_to_crt_in_nb)
-        self.__dumpJSN('dump.vms_to_del_in_nb.json', self.vms_to_del_in_nb)
-        self.__dumpJSN('dump.list_of_ips_01.json', self.list_of_ips_01)
-        self.__dumpTXT('dump.list_of_ips_02.txt', self.list_of_ips_02)
-        self.__dumpJSN('dump.list_white_ips_on_vms.json', self.list_white_ips_on_vms)
-        self.__dumpJSN('dump.list_vms_with_enabled_ipv6.json', self.list_vms_with_enabled_ipv6)
-        self.__dumpJSN('dump.raw_ips_from_nb.json', self.raw_ips_from_nb)
-        self.__dumpTXT('dump.ips_from_nb.txt', self.ips_from_nb)
-        self.__dumpTXT('dump.list_of_ips_03.txt', self.list_of_ips_03)
-        self.__dumpJSN('dump.ips_to_ipam_nb.json', self.ips_to_ipam_nb)
-        self.__dumpTXT('dump.list_ips_to_email.txt', self.list_ips_to_email)
-        self.__dumpTXT('dump.list_vms_to_email.txt', self.list_vms_to_email)
-        self.__dumpJSN('dump.list_removed_white_ips.json', self.list_removed_white_ips)
-        self.__dumpJSN('dump.list_added_white_ips.json', self.list_added_white_ips)
-        self.__dumpJSN('dump.list_of_ips_00.json', self.list_of_ips_00)
-        self.__dumpJSN('dump.clusters_from_nb.json', self.clusters_from_nb)
-        self.__dumpJSN('dump.vms_ids_from_nb.json', self.vms_ids_from_nb)
-        self.__dumpJSN('dump.vms_uuids_from_nb.json', self.vms_uuids_from_nb)
-        self.__dumpJSN('dump.vms_uuids_from_vw.json', self.vms_uuids_from_vw)
-
+        
     def __readListFromFile(self, filename):
         with open(filename, 'r', encoding='UTF-8') as f:
             return [line.replace('\n', '') for line in f.readlines()]
+        
+    def __readJSONFromFile(self, filename):
+        with open(filename, 'r', encoding='UTF-8') as f:
+            return json.load(f)
 
     def __dumpLOG(self, filename, data):
         if self.log_flg:
             self.__dumpTXT(filename, f'{dt.now()}: {data.replace('<b>', '').replace('</b>', '')}', 'a')
 
     def __dumpTXT(self, filename, data, mode='w'):  #  Change 'mode' from 'w' or 'a'
-        if data != None:
+        if data != None and self.dump_flg == True:
             with open(filename, mode, encoding="UTF-8") as f:
                 if isinstance(data, list):
                     print('\n'.join(data), file=f)
@@ -353,7 +359,7 @@ class ManageNetBox:
                     print(data, file=f)
     
     def __dumpJSN(self, filename, data, mode='w'):  #  Change 'mode' from 'w' or 'a'
-        if data != None:
+        if data != None and self.dump_flg == True:
             with open(filename, mode, encoding="UTF-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=4)
 
@@ -377,8 +383,10 @@ class ManageNetBox:
     def __loadClustersFromNetBox(self):
         self.clusters_from_nb = {}
         self.clusters_ids_from_nb = {}
-        for cluster in self.__netbox.virtualization.clusters.list(limit=0).data:
-            self.clusters_from_nb[cluster['name']] = cluster['id']
+
+        for cluster in [cl for cl in self.__netbox.virtualization.clusters.list(limit=0).data
+                        if cl['custom_fields']['virtualization_ignore_cl_to_automate'] != True]:
+            self.clusters_from_nb[cluster['name']] = [cluster['id'], cluster['site']['id']]
             self.clusters_ids_from_nb[cluster['id']] = cluster['name']
         self.clusters_lst_from_nb = set([cluster for cluster in self.clusters_from_nb.keys()])
     
@@ -398,7 +406,7 @@ class ManageNetBox:
         for cluster_name in self.clusters_lst_to_crt_in_nb:
             t_cluster = {}
             t_cluster['name'] = cluster_name
-            t_cluster['type'] = CLUSTERS_TYPES["vmware"]["id"]
+            t_cluster['type'] = self.cluster_types["vmware"]["id"]
             self.clusters_to_crt_in_nb.append(t_cluster)
         
         self.clusters_to_del_in_nb = []
@@ -423,11 +431,9 @@ class ManageNetBox:
             self.__dumpLOG(self.result_log_filename, message_to_log)
 
     # Sync data about VMs and IPs methods
-    def __loadVMsFromNetBox(self):
-        cstm = 'custom_fields'
-        uuid = 'virtualization_vms_uuid'
-
-        self.vms_from_nb = self.__netbox.virtualization.virtual_machines.list(limit=0).data
+    def __loadVMsFromNetBox(self, not_all = True):
+        self.vms_from_nb = [vm for vm in self.__netbox.virtualization.virtual_machines.list(limit=0).data 
+                            if vm['custom_fields']['virtualization_ignore_to_automate'] != not_all]
         self.vms_lst_from_nb = []
         self.vms_ids_from_nb = {}
         self.vms_uuids_from_nb = {}
@@ -437,7 +443,7 @@ class ManageNetBox:
             t_uuid_value = {}
             t_uuid_value['name'] = vm['name']
             t_uuid_value['id'] = vm['id']
-            self.vms_uuids_from_nb[vm[cstm][uuid]] = t_uuid_value
+            self.vms_uuids_from_nb[vm[self.cfs][self.t_uuid]] = t_uuid_value
         self.vms_lst_from_nb.sort()     
     
     def __loadVMsFromVMware(self):
@@ -452,14 +458,6 @@ class ManageNetBox:
             vm['routes'] = self.__vmware.get(f'{t_url}/guest/networking/routes').json()
             vm['filesystems'] = self.__vmware.get(f'{t_url}/guest/local-filesystem').json()
             vm['guest_status'] = self.__vmware.get(f'{t_url}/guest/identity').json()
-
-            """
-            #snapshot analyse
-            vm['snapshots'] = json.loads(self.__vmware.get(f'{self.vm_url}/sdk/vim25/8.0.2.0/VirtualMachine/{vm['vm']}/snapshot',
-                                                           headers={'Accept': 'application/json'},
-                                                           auth=HTTPBasicAuth('apikey', self.vmware_api_key)).text)
-            """
-            
             vm['folder'] = self.folders_from_vw[vm['name']] if vm['name'] in self.folders_from_vw.keys() else None
             vm['cluster'] = self.clusters_from_vw[vm['name']] if vm['name'] in self.clusters_from_vw.keys() else None
             
@@ -468,65 +466,64 @@ class ManageNetBox:
             self.vms_uuids_from_vw[vm['data']['identity']['instance_uuid']] = vm['name']
     
     def __loadFoldersFromVMware(self):
-        folders_raw_from_vw = {folder['folder']: folder['name'] 
+        self.folders_raw_from_vw = {folder['folder']: folder['name'] 
                                for folder in self.__vmware.get(f'{self.vm_url}/api/vcenter/folder').json() 
                                if folder['type'] == 'VIRTUAL_MACHINE'}
-        self.folders_lst_from_vw = sorted(set(folders_raw_from_vw.values()))
+
+        self.folder_path_from_vw = self.__vmware.get(f'{self.vm_url}/rest/vcenter/folder').json() 
+        
+        self.folders_lst_from_vw = sorted(set(self.folders_raw_from_vw.values()))
         self.folders_from_vw = {}
-        for folder_id, folder_name in folders_raw_from_vw.items():
+        for folder_id, folder_name in self.folders_raw_from_vw.items():
             for vm in self.__vmware.get(f'{self.vm_url}/rest/vcenter/vm', params={'filter.folders': folder_id}).json()['value']:
                 self.folders_from_vw[vm['name']] = folder_name
     
     def __loadNetworksFromVMware(self):
         self.networks_from_vw = {network['network']: network['name'] for network in self.__vmware.get(f"{self.vm_url}/api/vcenter/network").json()}
-    
-    def __genVMsToNetBox(self):
-        self.list_of_vms_prepare_to_backup_job = self.__readListFromFile('list_of_vms_prepare_to_backup_job.txt')
-        self.list_of_vms_in_backup_job = self.__readListFromFile('list_of_vms_in_backup_job.txt')
+
+    def __loadContactsFromNetBox(self):
+        self.contacts_from_netbox = self.__netbox.tenancy.contacts.list(limit=0).data
+        self.contacts_from_netbox_shot = {contact['name'].split()[0].lower(): contact['id'] for contact in self.contacts_from_netbox}
         
-        cstm = 'custom_fields'
+        try:
+            self.contacts_to_netbox = self.__readJSONFromFile('owners_to_netbox99.json')
+        except:
+            self.contacts_to_netbox = {}
 
-        uuid = 'virtualization_vms_uuid'
-        gsts_stat = 'virtualization_vms_guesstatus'
-        gsts_os = 'virtualization_vms_guestos'
-        disks = 'virtualization_vms_disks'
-        iscsi = 'virtualization_vms_iscsi_network_access'
-        luns = 'virtualization_vms_have_direct_attach_luns'
-        fs_capacity = 'virtualization_vms_filesystems_capacity'
-        fs_lst = 'virtualization_vms_filesystems'
-        interfaces = 'virtualization_vms_interfaces'
-        p_ipv4 = 'virtualization_vms_primaryipv4'
-        p_ipv6 = 'virtualization_vms_primaryipv6'
-        nics_types = 'virtualization_vms_type_of_nics'
-        folder = 'virtualization_vms_folder'
-        owners = 'virtualization_vms_owners'
-        notes = 'virtualization_vms_notes'
-        backup = 'virtualization_vms_backup_status'
-
+    def __genVMsToNetBox(self):
         self.vms_to_netbox = []
         for vm in self.vms_from_vw:
             tVM = {}
-            if 'cluster' in vm.keys() and vm['cluster'] in self.clusters_from_nb.keys():
-                tVM['cluster'] = self.clusters_from_nb[vm['cluster']]
+            tVM_all_public_IPs = []
+            tVM_all_private_IPs = []
             tVM['name'] = vm['name']
             tVM['slug'] = vm['name'].lower().replace(' ', '-').replace('_', '-').replace('(', '').replace(')','')
+            if vm['cluster'] is not None: 
+                if vm['cluster'] in self.clusters_from_nb.keys():
+                    tVM['cluster'] = self.clusters_from_nb[vm['cluster']][0]
+                    tVM['site'] = self.clusters_from_nb[vm['cluster']][1]
+            else:
+                for prefix, site_id in self.sites.items():
+                    if prefix in tVM['name']:
+                        tVM['site'] = site_id
+            
             tVM['status'] = POWER_STATES[vm['power_state']]
             tVM['vcpus'] = vm['cpu_count']
             tVM['memory'] = vm['memory_size_MiB']
             tVM['disk'] = 0
-            tVM[cstm] = {}
+            tVM[self.cfs] = {}
             if vm['name'] in self.list_of_vms_in_backup_job:
-                tVM[cstm][backup] = 'In backup job'
+                tVM[self.cfs][self.backup_status] = '_in_backup_job_'
             elif vm['name'] in self.list_of_vms_prepare_to_backup_job:
-                tVM[cstm][backup] = 'Candidate'
+                tVM[self.cfs][self.backup_status] = '_candidate_'
             else:
-                tVM[cstm][backup] = None
-            tVM[cstm][fs_capacity] = 0
-            tVM[cstm][iscsi] = 'No'
-            tVM[cstm][gsts_stat] = ('VM OFF' if tVM['status'] != 'active' else ('Need install' if'error_type' in vm['guest_status'].keys() else 'OK'))
-            tVM[cstm][gsts_os] =  VMWARE_OS_VERSION[vm['data']['guest_OS']]
-            tVM[cstm][uuid] = vm['data']['identity']['instance_uuid']
-            tVM[cstm][fs_lst] = []
+                tVM[self.cfs][self.backup_status] = '_none_'
+            tVM[self.cfs][self.fs_capacity] = 0
+            tVM[self.cfs][self.iscsi_network] = '_none_'
+            tVM[self.cfs][self.guesstatus] = ('_vm_off_' if tVM['status'] != 'active' else ('_need_install_' if 'error_type' in vm['guest_status'].keys() else '_ok_'))
+            tVM[self.cfs][self.guestos] =  VMWARE_OS_VERSION[vm['data']['guest_OS']]
+            tVM[self.cfs][self.t_uuid] = vm['data']['identity']['instance_uuid']
+            tVM[self.cfs][self.filesystems] = []
             t_free_space_lst = []
             if 'error_type' not in vm['filesystems'].keys():
                 for fs_name, fs_data in vm['filesystems'].items():
@@ -536,32 +533,43 @@ class ManageNetBox:
                     tFS['capacity_in_gb'] = fs_data['capacity'] // GB
                     tFS['freespace_in_gb'] = fs_data['free_space'] // GB
                     if fs_data['free_space'] not in t_free_space_lst:
-                        tVM[cstm][fs_capacity] += fs_data['capacity'] // GB
+                        tVM[self.cfs][self.fs_capacity] += fs_data['capacity'] // GB
                         t_free_space_lst.append(fs_data['free_space'])
-                    tVM[cstm][fs_lst].append(tFS)
-            tVM[cstm][disks] = []
+                    tVM[self.cfs][self.filesystems].append(tFS)
+            tVM[self.cfs][self.disks] = []
+            tVM[self.cfs][self.sans] = set()
             if 'error_type' not in vm['data']['disks'].keys():
                 for hdd_name, hdd_data in vm['data']['disks'].items():
                     tDRV = {}
                     tDRV['name'] = hdd_name
                     tDRV['label'] = hdd_data['label']
                     tDRV['vmdk'] = hdd_data['backing']['vmdk_file']
+                    t_str01 = hdd_data['backing']['vmdk_file'].split('[')[1].split(']')[0]
+                    if t_str01 in self.datastores.keys():
+                        tVM[self.cfs][self.sans].add(self.datastores[t_str01])
                     tDRV['capacity_in_gb'] = hdd_data['capacity'] // GB
                     tVM['disk'] += hdd_data['capacity'] // GB
-                    tVM[cstm][disks].append(tDRV)
+                    tVM[self.cfs][self.disks].append(tDRV)
+            tVM[self.cfs][self.sans] = ', '.join(sorted(list(tVM[self.cfs][self.sans])))
             tNICsTypes = []
-            tVM[cstm][interfaces] = []
-            tVM[cstm][p_ipv4] = None
-            tVM[cstm][p_ipv6] = None
+            tVM[self.cfs][self.interfaces] = []
+            tVM[self.cfs][self.primaryipv4] = None
+            tVM[self.cfs][self.primaryipv6] = None
             primaryIPv4flag = False
             primaryIPv6flag = False
+            tVM[self.cfs][self.have_public_ips] = '_none_'
+            tVLANs = []
             for nic_name, nic_data in vm['data']['nics'].items():
                 tNIC = {}
                 tNIC['name'] = nic_name
                 tNIC['state'] = nic_data['state']
-                tNIC['vswitch'] = self.networks_from_vw[nic_data['backing']['network']]
-                if  tNIC['vswitch'] == NAME_OF_ISCSI_NETWORK:
-                    tVM[cstm][iscsi] = 'Yes'
+                if 'network' in nic_data['backing'].keys():
+                    tNIC['vswitch'] = self.networks_from_vw[nic_data['backing']['network']]
+                    tVLANs.append(tNIC['vswitch'])
+                else:
+                    tNIC['vswitch'] = None
+                if  tNIC['vswitch'] in self.name_of_iscsi_network:
+                    tVM[self.cfs][self.iscsi_network] = '_yes_'
                 tNIC['mac'] = nic_data['mac_address'].lower()
                 tNIC['type'] = nic_data['type']
                 tNICsTypes.append(nic_data['type'])
@@ -572,35 +580,79 @@ class ManageNetBox:
                             and 'ip' in interface.keys()):
                             for ip in interface['ip']['ip_addresses']:
                                 tNIC['ips'].append(ip['ip_address'])
-                                if not primaryIPv4flag and len(ip['ip_address']) <= 16:
-                                    tVM[cstm][p_ipv4] = ip['ip_address']
+                                if ipaddress.ip_address(ip['ip_address']).is_global:
+                                    tVM[self.cfs][self.have_public_ips] = '_yes_'
+                                    tVM_all_public_IPs.append(ip['ip_address'])
+                                else:
+                                    tVM_all_private_IPs.append(ip['ip_address'])
+                                if not primaryIPv4flag and ':' not in ip['ip_address']:
+                                    tVM[self.cfs][self.primaryipv4] = ip['ip_address']
                                     primaryIPv4flag = True
-                                if not primaryIPv6flag and len(ip['ip_address']) > 16:
-                                    tVM[cstm][p_ipv6] = ip["ip_address"]
+                                if not primaryIPv6flag and ':' in ip['ip_address']:
+                                    tVM[self.cfs][self.primaryipv6] = ip["ip_address"]
                                     primaryIPv6flag = True
-                tVM[cstm][interfaces].append(tNIC)
-            tVM[cstm][folder] = None if vm['folder'] == 'vm' else f'{vm['folder']}'
-            tVM[cstm][luns] =  'Yes' if tVM[cstm][fs_capacity] > tVM['disk'] else 'No'
-            tVM[cstm][owners] = (OWNERS_OF_VMS[tVM['name']]['owner'] if tVM['name'] in OWNERS_OF_VMS.keys() else None)
-            tVM[cstm][notes] = (OWNERS_OF_VMS[tVM['name']]['note'] if tVM['name'] in OWNERS_OF_VMS.keys() else None)
-            tVM[cstm][nics_types] = ', '.join(sorted(set(tNICsTypes)))
+                tVM[self.cfs][self.interfaces].append(tNIC)
             
-            if tVM[cstm][uuid] in self.vms_uuids_from_nb.keys():
-                tVM['id'] = self.vms_uuids_from_nb[tVM[cstm][uuid]]['id']
+            tVM[self.cfs][self.vlans] = ', '.join(sorted(tVLANs))
 
+            tVM[self.cfs][self.all_public_ips] = ', '.join(sorted(tVM_all_public_IPs, key=self.__ip_to_int))
+            tVM[self.cfs][self.all_private_ips] = ', '.join(sorted(tVM_all_private_IPs, key=self.__ip_to_int))
+            
+            tVM[self.cfs][self.folder] = None if vm['folder'] == 'vm' else f'{vm['folder']}'
+            tVM[self.cfs][self.have_luns] =  '_yes_' if tVM[self.cfs][self.fs_capacity] > tVM['disk'] else '_none_'
+            tVM[self.cfs][self.type_of_nics] = ', '.join(sorted(set(tNICsTypes)))
+            
+            if tVM[self.cfs][self.t_uuid] in self.vms_uuids_from_nb.keys():
+                tVM['id'] = self.vms_uuids_from_nb[tVM[self.cfs][self.t_uuid]]['id']
+            
+            if tVM['name'] in self.contacts_to_netbox.keys():
+                tVM[self.cfs][self.owners] = []
+                for contact in self.contacts_to_netbox[tVM['name']]:
+                    tVM[self.cfs][self.owners].append({"id": self.contacts_from_netbox_shot[contact]})
+            
             self.vms_to_netbox.append(tVM)
         
         self.vms_lst_uuids_to_upd_in_nb = sorted(set(self.vms_uuids_from_vw.keys()) & set(self.vms_uuids_from_nb.keys()))
         self.vms_lst_uuids_to_crt_in_nb = sorted(set(self.vms_uuids_from_vw.keys()) - set(self.vms_uuids_from_nb.keys()))
         self.vms_lst_uuids_to_del_in_nb = sorted(set(self.vms_uuids_from_nb.keys()) - set(self.vms_uuids_from_vw.keys()))
+        
+        self.vms_to_netbox_X = {vm[self.cfs][self.t_uuid]: vm for vm in self.vms_to_netbox}
+        self.vms_from_netbox_X = {vm[self.cfs][self.t_uuid]: vm for vm in self.vms_from_nb}
 
-        self.vms_to_upd_in_nb = [vm for vm in self.vms_to_netbox if vm[cstm][uuid] in self.vms_lst_uuids_to_upd_in_nb]
-        self.vms_to_crt_in_nb = [vm for vm in self.vms_to_netbox if vm[cstm][uuid] in self.vms_lst_uuids_to_crt_in_nb]
-        self.vms_to_del_in_nb = [{'id': vm['id'], 'name': vm['name']} for vm in self.vms_from_nb if vm[cstm][uuid] in self.vms_lst_uuids_to_del_in_nb]
+        self.vms_to_upd_in_nb = []
+
+        for vm in self.vms_to_netbox:
+            if vm[self.cfs][self.t_uuid] in self.vms_lst_uuids_to_upd_in_nb:
+                if self.__VMisChangedByUUID(vm[self.cfs][self.t_uuid]):
+                    self.vms_to_upd_in_nb.append(vm)
+
+        self.vms_to_crt_in_nb = [vm for vm in self.vms_to_netbox if vm[self.cfs][self.t_uuid] in self.vms_lst_uuids_to_crt_in_nb]
+        self.vms_to_del_in_nb = [{'id': vm['id'], 'name': vm['name']} for vm in self.vms_from_nb if vm[self.cfs][self.t_uuid] in self.vms_lst_uuids_to_del_in_nb]
 
         self.vms_lst_to_upd_in_nb = sorted(vm['name'] for vm in self.vms_to_upd_in_nb)
         self.vms_lst_to_crt_in_nb = sorted(vm['name'] for vm in self.vms_to_crt_in_nb)
         self.vms_lst_to_del_in_nb = sorted(vm['name'] for vm in self.vms_to_del_in_nb)
+
+    def __VMisChangedByUUID(self, uuid):
+        if not('cluster' not in self.vms_to_netbox_X[uuid].keys() and self.vms_from_netbox_X[uuid]['cluster'] is None):
+            if self.vms_to_netbox_X[uuid]['cluster'] != self.vms_from_netbox_X[uuid]['cluster']['id']:
+                return True
+        
+        if self.vms_to_netbox_X[uuid]['status'] != self.vms_from_netbox_X[uuid]['status']['value']:
+            return True
+
+        for f in ['name', 'vcpus', 'memory', 'disk']:
+            if self.vms_to_netbox_X[uuid][f] != self.vms_from_netbox_X[uuid][f]:
+                return True
+        
+        list_of_fields_to_ignore = ['cfs', 'notes', 'owners', 'purpose', 'ignore_to_email']
+
+        for f_key, f_val in self.config_full[self.cfs].items():
+            if f_key not in list_of_fields_to_ignore:
+                if self.vms_to_netbox_X[uuid][self.cfs][f_val] != self.vms_from_netbox_X[uuid][self.cfs][f_val]:
+                    return True
+                
+        return False
 
     def __ip_to_int(self, ip):
             if len(ip) <= 15:
@@ -610,51 +662,69 @@ class ManageNetBox:
 
     def __loadIPsFromNetBox(self):
         self.raw_ips_from_nb = self.__netbox.ipam.ip_addresses.list(limit=0).data
-        self.ips_from_nb = sorted(list(set([ip['address'].split('/')[0] 
-                                            for ip in self.raw_ips_from_nb])), key=self.__ip_to_int)
+        try:
+            self.ips_from_nb = sorted(list(set([ip['address'].split('/')[0] 
+                                                for ip in self.raw_ips_from_nb])), key=self.__ip_to_int)
+        except Exception as error:
+            self.__sendEmail(f'Error of parsing of IPs data in IPAM', 
+                             [f'Error of parsing of IPs data in IPAM: {type(error).__name__} {error.args}'], self.__readListFromFile('mail_list_to_vms_sync.txt'))
+            sys.exit()
 
     def __genAllPublicIPsListInNetBox(self):
         self.all_public_ips = {}
         self.all_public_ips_by_owner = {}
         for ip in self.raw_ips_from_nb:
             t_ip = ip['address'].split('/')[0]
-            if ipaddress.ip_address(t_ip).is_global:
-                self.all_public_ips[t_ip] = ip['description']
+            if ipaddress.ip_address(t_ip).is_global and ip['status']['value'] == 'active':
+                self.all_public_ips[t_ip] = ip['description'] if ip['description'] != '' else 'NO DESCRIPTION'
+        self.all_public_ips_by_desc = {}
+        for ip, desc in self.all_public_ips.items():
+            if desc not in self.all_public_ips_by_desc.keys():
+                self.all_public_ips_by_desc[desc] = []
+            self.all_public_ips_by_desc[desc].append(ip)
+        self.all_public_ips_by_desc = dict(sorted(self.all_public_ips_by_desc.items()))
 
     def loadAndSendPublicIPsFromNetBoxIPAM(self):
         self.__loadIPsFromNetBox()
         self.__genAllPublicIPsListInNetBox()
-        #self.__dumpJSN("dump.ips_from_nb.json", self.ips_from_nb)            
-        #self.__dumpJSN("dump.raw_ips_from_nb.json", self.raw_ips_from_nb)
-        #self.__dumpJSN("dump.all_public_ips.json", self.all_public_ips)
-        self.list_ips_to_email = [f"<b>{ip}</b> ({description})" for ip, description in self.all_public_ips.items()]
+        if self.dump_flg:
+            self.__dumpJSN("dump.ips_from_nb.json", self.ips_from_nb)            
+            self.__dumpJSN("dump.raw_ips_from_nb.json", self.raw_ips_from_nb)
+            self.__dumpJSN("dump.all_public_ips.json", self.all_public_ips)
+            self.__dumpJSN("dump.all_public_ips_by_desc.json", self.all_public_ips_by_desc)
+        self.list_ips_to_email = [f"<b>{ip}</b> ({description if description != 'NO DESCRIPTION' else f'<b style="color:#FF0000">{description}</b>'})" 
+                                  for ip, description in self.all_public_ips.items()]
         q_ips = len(self.all_public_ips)
-        self.__sendEmail(f'Full List of Public IPs  ({q_ips}) in NetBox', 
-                         self.list_ips_to_email, self.__readListFromFile('mail_full_list_of_public_ips_in_netbox_ipam.txt'))
+        if self.min_notification_hour <= RUN_HOUR < self.max_notification_hour:
+            self.__sendEmail(f'Full List of Public IPs ({q_ips}) in NetBox by IP', 
+                             self.list_ips_to_email, self.__readListFromFile('mail_full_list_of_public_ips_in_netbox_ipam.txt'))
+        
+        self.list_ips_to_email = [f"<b>{description if description != 'NO DESCRIPTION' else f'<span style="color:#FF0000">{description}</span>'}</b> ({' | '.join(ips)})" 
+                                  for description, ips in self.all_public_ips_by_desc.items()]
+        q_decs = len(self.all_public_ips_by_desc)
+        if self.min_notification_hour <= RUN_HOUR < self.max_notification_hour:
+            self.__sendEmail(f'Full List of Public IPs ({q_ips}) in NetBox by Description ({q_decs})', 
+                             self.list_ips_to_email, self.__readListFromFile('mail_full_list_of_public_ips_in_netbox_ipam.txt'))
 
     def __genIPsLists(self):
-        cstm = 'custom_fields'
-        interfaces = 'virtualization_vms_interfaces'
-
         # List of IPs in NetBox with VM
         self.list_of_ips_00 = {}
         for vm in self.vms_from_nb:
             if vm['status']['value'] == 'active':
-                for interface in vm[cstm][interfaces]:
-                    for ip in interface['ips']:
-                        self.list_of_ips_00[ip] = vm['name']
-        self.list_of_ips_00 = dict(sorted(self.list_of_ips_00.items(), 
-                                          key=lambda item: self.__ip_to_int(item[0])))
+                if vm[self.cfs][self.interfaces] != None:
+                    for interface in vm[self.cfs][self.interfaces]:
+                        for ip in interface['ips']:
+                            self.list_of_ips_00[ip] = vm['name']
+        self.list_of_ips_00 = dict(sorted(self.list_of_ips_00.items(), key=lambda item: self.__ip_to_int(item[0])))
         
         # List of IPs to NetBox with VM
         self.list_of_ips_01 = {}
         for vm in self.vms_to_netbox:
             if vm['status'] == 'active':
-                for interface in vm[cstm][interfaces]:
+                for interface in vm[self.cfs][self.interfaces]:
                     for ip in interface['ips']:
                         self.list_of_ips_01[ip] = vm['name']
-        self.list_of_ips_01 = dict(sorted(self.list_of_ips_01.items(), 
-                                          key=lambda item: self.__ip_to_int(item[0])))
+        self.list_of_ips_01 = dict(sorted(self.list_of_ips_01.items(), key=lambda item: self.__ip_to_int(item[0])))
         
         self.list_added_ips = {}
         self.list_removed_ips = {}
@@ -675,8 +745,7 @@ class ManageNetBox:
         
         q_ips = len(self.list_ips_to_email)
         if q_ips > 0:
-            self.__sendEmail(f'List of changed IPs ({q_ips})', 
-                             self.list_ips_to_email, self.__readListFromFile('mail_list_to_change_ip.txt'))
+            self.__sendEmail(f'List of changed IPs ({q_ips})', self.list_ips_to_email, self.__readListFromFile('mail_list_to_change_ip.txt'))
         
         self.list_added_white_ips = {}
         self.list_removed_white_ips = {}
@@ -699,18 +768,16 @@ class ManageNetBox:
         
         q_ips = len(self.list_ips_to_email)
         if q_ips > 0:
-            self.__sendEmail(f'List of changed public IPs ({q_ips})', 
-                             self.list_ips_to_email, self.__readListFromFile('mail_list_to_change_public_ip.txt'))
+            self.__sendEmail(f'List of changed public IPs ({q_ips})', self.list_ips_to_email, self.__readListFromFile('mail_list_to_change_public_ip.txt'))
         
         self.list_of_ips_02 = sorted(list(self.list_of_ips_01.keys()), key=self.__ip_to_int)
         self.list_of_ips_03 = sorted(list(set(self.list_of_ips_02) - (set(self.list_of_ips_02) & set(self.ips_from_nb))), key=self.__ip_to_int) 
 
         self.ips_to_ipam_nb = {ip: self.list_of_ips_01[ip] for ip in self.list_of_ips_03 if len(ip) <= 16}
         self.list_ips_to_email = [f"<b>{ip}</b> ({vm})" for ip, vm in self.ips_to_ipam_nb.items()]
-        #self.list_ips_to_email = [f'<b>{ip}</b> ({vm})' for ip, vm in self.ips_to_ipam_nb.items()]
         q_ips = len(self.list_ips_to_email)
-        self.__sendEmail(f'List of IPs ({q_ips}) to create in IPAM', 
-                         self.list_ips_to_email, self.__readListFromFile('mail_list_to_ipam_create.txt'))
+        if self.min_notification_hour <= RUN_HOUR < self.max_notification_hour and q_ips > 0:
+            self.__sendEmail(f'List of IPs ({q_ips}) to create in IPAM', self.list_ips_to_email, self.__readListFromFile('mail_list_to_ipam_create.txt'))
 
         self.list_white_ips_on_vms = {}
         q_ips = 0
@@ -718,81 +785,103 @@ class ManageNetBox:
             if ipaddress.ip_address(ip).is_global:
                 if vm_name not in self.list_white_ips_on_vms.keys():
                     self.list_white_ips_on_vms[vm_name] = []
-                if vm_name in self.list_white_ips_on_vms.keys():
-                    self.list_white_ips_on_vms[vm_name].append(ip)
-                    q_ips += 1  
+                self.list_white_ips_on_vms[vm_name].append(ip)
+                q_ips += 1  
+        
         q_vms = len(self.list_white_ips_on_vms.keys())
         self.list_white_ips_on_vms = dict(sorted(self.list_white_ips_on_vms.items()))
-        self.list_vms_to_email = [f"<b>{vm}</b> ({' | '.join(ips)})" 
-                                  for vm, ips in self.list_white_ips_on_vms.items()]
-        self.__sendEmail(f'List of VMs ({q_vms}) with public IPs ({q_ips})', 
-                         self.list_vms_to_email, self.__readListFromFile('mail_list_to_public_ip.txt'))
-
+        self.list_vms_to_email = [f"<b>{vm}</b> ({' | '.join(ips)})" for vm, ips in self.list_white_ips_on_vms.items()]
+        if self.min_notification_hour <= RUN_HOUR < self.max_notification_hour:
+            self.__sendEmail(f'List of VMs ({q_vms}) with public IPs ({q_ips})', self.list_vms_to_email, self.__readListFromFile('mail_list_to_public_ip.txt'))
+            
         self.list_vms_with_enabled_ipv6 = {}
         for ip, vm_name in self.list_of_ips_01.items():
             if len(ip) > 15:
                 if vm_name not in self.list_vms_with_enabled_ipv6.keys():
                     self.list_vms_with_enabled_ipv6[vm_name] = []
-                if vm_name in self.list_vms_with_enabled_ipv6.keys():
-                    self.list_vms_with_enabled_ipv6[vm_name].append(ip)    
+                self.list_vms_with_enabled_ipv6[vm_name].append(ip)
+            
         q_vms = len(self.list_vms_with_enabled_ipv6.keys())
         self.list_vms_with_enabled_ipv6 = dict(sorted(self.list_vms_with_enabled_ipv6.items()))
         list_vms_to_email = sorted([f'<b>{vm}</b> ({' | '.join(ips)})' for vm, ips in self.list_vms_with_enabled_ipv6.items()])
-        self.__sendEmail(f'List of VMs ({q_vms}) with enabled IPv6 that need to be disabled', 
-                         list_vms_to_email, self.__readListFromFile('mail_list_to_ipv6_disable.txt'))
+        if self.min_notification_hour <= RUN_HOUR < self.max_notification_hour:
+            self.__sendEmail(f'List of VMs ({q_vms}) with enabled IPv6 that need to be disabled', list_vms_to_email, self.__readListFromFile('mail_list_to_ipv6_disable.txt'))
 
     def syncVMsFromVMwareToNetBox(self):
         if self.vm_flg and self.nb_flg:
             self.__loadClustersFromNetBox()  #  To 'self.clusters_from_nb' JSON
             self.__loadIPsFromNetBox()
             self.__loadVMsFromNetBox()       #  To 'self.vms_from_nb' JSON and 'self.vms_lst_from_nb' lst
+            self.__loadContactsFromNetBox()  
 
             self.__loadClustersFromVMware()  #  To 'self.clusters_from_vw' JSON and 'self.clusters_lst_from_vw' lst
             self.__loadVMsFromVMware()       #  To 'self.vms_from_vw' JSON and 'self.vms_lst_from_vw' lst
 
             self.__genVMsToNetBox()          #  To 'self.vms_to_netbox' JSON in NetBox format
             self.__genIPsLists()             #  To 'self.list_of_ips_01' JSON and 'self.list_of_ips_02' JSON
-
+            
             self.__syncClustersFromVMwareToNetBox()
 
             list_of_events = []
+            
             self.__netbox.virtualization.virtual_machines.update(self.vms_to_upd_in_nb)
-            message_to_log = f'<b>Updated {len(self.vms_lst_to_upd_in_nb)} VMs</b>'
-            list_of_events.append( f'{message_to_log}')
-            self.__dumpLOG(self.result_log_filename, message_to_log)
-
-            self.__netbox.virtualization.virtual_machines.create(self.vms_to_crt_in_nb)
-            lst_vm_to_log = ' | '.join(self.vms_lst_to_crt_in_nb)
-            message_to_log = f'<b>Created {len(self.vms_lst_to_crt_in_nb)} VMs:</b> ({lst_vm_to_log})'
+            lst_vm_to_log = ' | \n'.join(self.vms_lst_to_upd_in_nb)
+            message_to_log = f'<b>Updated {len(self.vms_lst_to_upd_in_nb)} VMs</b> ({lst_vm_to_log})'
+            #print(message_to_log)
             list_of_events.append( f'{message_to_log}')
             self.__dumpLOG(self.result_log_filename, message_to_log)
             
             # Witout 'try-except' don't work out of errors on 'netbox-python' library
             try:
                 self.__netbox.virtualization.virtual_machines.delete(self.vms_to_del_in_nb)
-            except:
-                lst_vm_to_log = ' | '.join(self.vms_lst_to_del_in_nb)
+                lst_vm_to_log = ' | \n'.join(self.vms_lst_to_del_in_nb)
                 message_to_log = f'<b>Deleted {len(self.vms_lst_to_del_in_nb)} VMs:</b> ({lst_vm_to_log})'
-                list_of_events.append( f'{message_to_log}')
+                #print(message_to_log)
+                if len(self.vms_lst_to_del_in_nb) > 0:
+                    list_of_events.append( f'{message_to_log}')
+                self.__dumpLOG(self.result_log_filename, message_to_log)
+            except:
+                lst_vm_to_log = ' | \n'.join(self.vms_lst_to_del_in_nb)
+                message_to_log = f'<b>Deleted {len(self.vms_lst_to_del_in_nb)} VMs:</b> ({lst_vm_to_log})'
+                #print(message_to_log)
+                if len(self.vms_lst_to_del_in_nb) > 0:
+                    list_of_events.append( f'{message_to_log}')
                 self.__dumpLOG(self.result_log_filename, message_to_log)
 
-            self.__sendEmail('Report about sync of VMs from VMware to NetBox', 
+            self.__netbox.virtualization.virtual_machines.create(self.vms_to_crt_in_nb)
+            lst_vm_to_log = ' | \n'.join(self.vms_lst_to_crt_in_nb)
+            message_to_log = f'<b>Created {len(self.vms_lst_to_crt_in_nb)} VMs:</b> ({lst_vm_to_log})'
+            #print(message_to_log)
+            if len(self.vms_lst_to_crt_in_nb) > 0:
+                list_of_events.append( f'{message_to_log}')
+            self.__dumpLOG(self.result_log_filename, message_to_log)
+
+            t_len = len(self.vms_from_vw)
+            self.__sendEmail(f'Report about sync of VMs ({t_len}) from VMware to NetBox', 
                              list_of_events, self.__readListFromFile('mail_list_to_vms_sync.txt'))
             if len(self.vms_to_crt_in_nb) > 0 or len(self.vms_to_del_in_nb) > 0:
-                self.__sendEmail('Report about sync of VMs from VMware to NetBox', 
+                self.__sendEmail(f'Report about sync of VMs ({t_len}) from VMware to NetBox', 
                                  list_of_events, self.__readListFromFile('mail_list_to_changed_vms_sync.txt'))
-                
-            self.dumpAllAboutVMsSyncToFiles() # Dump all data about VMs sync to files
+            
+            if self.dump_flg:
+                self.dumpAllAboutVMsSyncToFiles() # Dump all data about VMs sync to files
             
     # Send Email methods
-    def __sendEmail (self, subject, list_of_values, mail_recipients):
+    def __sendEmail (self, subject, list_of_values, mail_recipients, title=None):
         if self.mail_flg:
             date = f'{dt.now():%Y-%m-%d %H:%M:%S}'
             
             header_html = '<html>\n<body>'
-            footer_html = f'<hr>\n<a href="{self.nb_url}">NetBox</a>\n</body>\n</html>'
 
-            body_html = f'<h3>{subject} ({date})</h3>'
+            vms_url = f'virtualization/virtual-machines'
+
+            footer_html = f"""\
+                <hr>\n
+                <a href="{self.nb_url}">NetBox</a>\n
+                <br><a href="{self.nb_url}/{vms_url}/">NetBox | All VMs</a>\n
+                """
+            
+            body_html = f'<h4>{subject if title == None else title}{(' (' + date + ')') if title == None else ''}</h4>'
             body_html += '<ul>\n<li>'
             body_html += '</li>\n<li>'.join(list_of_values)
             body_html += '</li>\n</ul>\n'
@@ -806,7 +895,7 @@ class ManageNetBox:
             message['Subject'] = subject
             message['From'] = self.mail_sender
             message['To'] = '; '.join(mail_recipients)
-            message['Date'] = date
+            message['Date'] = formatdate(localtime=True)
             
             message.attach(MIMEText(message_text, "text"))
             message.attach(MIMEText(message_html, "html"))
@@ -819,19 +908,60 @@ class ManageNetBox:
                 server.login(self.mail_sender, self.mail_pas)
                 for mail_recipient in mail_recipients:
                     server.sendmail(self.mail_sender, mail_recipient, str(message).encode('utf-8'))
+    
+    def sendMessagesToVMsOwners(self):
+        self.__loadContactsFromNetBox()  #  self.contacts_from_netbox
+        self.__loadVMsFromNetBox(False)  #  self.vms_from_nb
+
+        self.list_of_owners_w_vms = {}
+        for contact in self.contacts_from_netbox:
+            t_list = {}
+            
+            t_list['name_short'] = contact['name']
+            t_list['name_full'] = contact['title']
+            t_list['email'] = contact['email']
+            t_list['ignore_email'] = contact[self.cfs][self.ignore_to_email]
+            t_list['vms_wo_purpose'] = []
+
+            self.list_of_owners_w_vms[contact['id']] = t_list
+
+        for vm in self.vms_from_nb:
+            if vm[self.cfs][self.owners] != None and vm[self.cfs][self.purpose] == None:
+                t_vm = {}
+                t_vm['name'] = vm['name']
+                t_vm['url'] = vm['url'].replace('api/', '')
+                for owner in vm[self.cfs][self.owners]:
+                    self.list_of_owners_w_vms[owner['id']]['vms_wo_purpose'].append(t_vm)
+
+        email_name = 'Требуется уточнить данные о ВМ, в которых Вы указаны как владелец'
+        for onwer_key, owner_val in self.list_of_owners_w_vms.items():
+            if owner_val['ignore_email'] == '_yes_':
+                continue
+
+            list_of_vms_with_url = []
+            for vm in owner_val['vms_wo_purpose']:
+                list_of_vms_with_url.append(f'<a href="{vm['url']}">{vm['name']}</a>')
+            
+            link_to_vms_by_owner = f'{self.nb_url}/virtualization/virtual-machines/?cf_virtualization_vms_owners={onwer_key}'
+
+            email_message = f"""Уважаемый {owner_val['name_short']}!<br><br>\n\
+                В ВМ ({len(list_of_vms_with_url)} шт.), указанных ниже списком (кликабельно), Вы указаны как владелец.<br>\n
+                Требуется заполнить для указанных в письме ВМ поле "Purpose".<br><br>\n
+                <a href="{link_to_vms_by_owner}">Ссылка на все ВМ, в которых Вы указаны как владелец.</a><br>
+                """
+            
+            t_emails_list = []
+            t_emails_list.append(owner_val['email'])
+            t_emails_list.append(self.admin_email)
+            
+            if len(list_of_vms_with_url) > 0 and self.min_notification_hour <= RUN_HOUR < self.max_notification_hour:
+                self.__sendEmail(email_name, list_of_vms_with_url, t_emails_list, email_message)
 
 def main():
-    netbox = ManageNetBox(vm_flg=conf.vm_flg, vm_url=conf.vm_url, vm_log=conf.vm_log, vm_pas=conf.vm_pas,
-                          nb_flg=conf.nb_flg, nb_url=conf.nb_url, nb_key=conf.nb_key,
-                          log_flg=conf.log_flg, 
-                          errors_log_filename=conf.errors_log_filename, 
-                          result_log_filename=conf.result_log_filename,
-                          mail_flg=conf.mail_flg, 
-                          mail_srv=conf.mail_srv, mail_prt=conf.mail_prt, 
-                          mail_sender=conf.mail_sender, mail_pas=conf.mail_pas)
-    
-    netbox.syncVMsFromVMwareToNetBox()  #  Sync of VMs (Source=VMware, Destination=NetBox)
+    netbox = ManageNetBox()
+    netbox.syncVMsFromVMwareToNetBox()
     netbox.loadAndSendPublicIPsFromNetBoxIPAM()
+    netbox.sendMessagesToVMsOwners()
     
 if __name__ == '__main__':
     main()

@@ -1,0 +1,80 @@
+{
+	"vm_flg": true,
+	"vm_url": "https://vcsa.example.domain",
+	"vm_log": "username@vcsa.example.domain",
+	"vm_pas": "password",
+	
+	"nb_flg": true,
+	"nb_url": "https://netbox.example.domain/",
+	"nb_key": "api_key",
+	
+	"log_flg": true,
+	"errors_log_filename": "errors.log",
+	"result_log_filename": "result.log",
+	
+	"dump_flg": true,
+	
+	"mail_flg": true,
+	"mail_srv": "mail.example.domain",
+	"mail_prt": 25,
+	"mail_sender": "mailbox@example.domain",
+	"mail_pas": "password",
+	
+	"min_notification_hour": 10,
+	"max_notification_hour": 11,
+
+	"admin_email": "username@example.domain",
+	
+	"cluster_types": {
+		"vmware": {
+			"id": 1, 
+			"note": "virtualization (vmware vsphere)"
+		}
+	},
+	
+	"name_of_iscsi_network": [
+		"iscsi_network_name_in_vmware_1",
+		"iscsi_network_name_in_vmware_2"
+	],
+	"datastores": {
+		"datastore_name_01": "san1_name",
+		"datastore_name_02": "san1_name",
+		"datastore_name_03": "san2_name",
+		"datastore_name_04": "san2_name"
+	},
+
+	"sites": {
+		/*id site 1 in netbox - this comment can be delete before run script*/
+		"prefix_site_1": 13,
+		/*id site 2 in netbox - this comment can be delete before run script*/
+		"prefix_site_2": 14  
+	},
+	
+	"custom_fields": {
+		"cfs": "custom_fields",
+		"backup_status": "virtualization_vms_backup_status",
+		"fs_capacity": "virtualization_vms_filesystems_capacity",
+		"guesstatus": "virtualization_vms_guesstatus",
+		"have_luns": "virtualization_vms_have_direct_attach_luns",
+		"iscsi_network": "virtualization_vms_iscsi_network_access",
+		"guestos": "virtualization_vms_guestos",
+		"primaryipv4": "virtualization_vms_primaryipv4",
+		"primaryipv6": "virtualization_vms_primaryipv6",
+		"sans": "virtualization_vms_sans",
+		"type_of_nics": "virtualization_vms_type_of_nics",
+		"t_uuid": "virtualization_vms_uuid",
+		"folder": "virtualization_vms_folder",
+		"disks": "virtualization_vms_disks",
+		"filesystems": "virtualization_vms_filesystems",
+		"interfaces": "virtualization_vms_interfaces",
+		"notes": "virtualization_vms_notes",
+		"owners": "virtualization_vms_owners",
+		"purpose": "virtualization_vms_purpose",
+		"have_public_ips": "virtualization_vms_have_public_ips",
+		"all_public_ips": "virtualization_vms_all_public_ips",
+		"all_private_ips": "virtualization_vms_all_private_ips",
+		"vlans": "virtualization_vms_vlans",
+
+		"ignore_to_email": "tenancy_contact_ignore_to_email"
+	}
+}
